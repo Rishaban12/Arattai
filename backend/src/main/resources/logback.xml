@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Where the log file lives. Overridable with -Darattai.log.dir=... -->
+    <property name="LOG_DIR" value="${arattai.log.dir:-logs}"/>
+    <property name="PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
+
+    <!-- Console -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Dedicated file for the OAuth2 flow only: logs/oauth.log -->
+    <appender name="OAUTH_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/oauth.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/oauth.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Application logs: verbose, to console only -->
+    <logger name="com.arattai" level="DEBUG"/>
+
+    <!-- OAuth2 flow: route to its own file (logs/oauth.log) + console.
+         additivity=false keeps these lines OUT of the general arattai.log. -->
+    <logger name="com.arattai.web.auth.GoogleAuthServlet" level="DEBUG" additivity="false">
+        <appender-ref ref="OAUTH_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+    <logger name="com.arattai.web.auth.GoogleCallbackServlet" level="DEBUG" additivity="false">
+        <appender-ref ref="OAUTH_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+    <logger name="com.arattai.auth.GoogleOAuthService" level="DEBUG" additivity="false">
+        <appender-ref ref="OAUTH_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <!-- Quiet down noisy libraries (were flooding the log at DEBUG) -->
+    <logger name="com.zaxxer.hikari"          level="INFO"/>
+    <logger name="com.datastax"               level="WARN"/>
+    <logger name="io.netty"                   level="WARN"/>
+    <logger name="io.lettuce"                 level="INFO"/>
+    <logger name="org.apache.kafka"           level="WARN"/>
+    <logger name="org.apache.catalina"        level="INFO"/>
+    <logger name="org.apache.coyote"          level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

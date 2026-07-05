@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node /tmp/claude-1001/-home-rishaban-IdeaProjects-Arattai/7ffd1ae9-6ed5-46cc-a08a-8ffad938308c/scratchpad/ws_test.js)",
+      "Bash(curl -s -b y.txt http://localhost:3000/api/conversations)",
+      "Bash(curl -s -c s.txt -o /dev/null -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"san@arattai.com\",\"password\":\"654321\"}')",
+      "Bash(curl -s -b s.txt http://localhost:3000/api/conversations)"
+    ]
+  }
+}
