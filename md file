@@ -230,8 +230,10 @@ S3_ENDPOINT / S3_BUCKET / S3_KEY / S3_SECRET
 JWT_PRIVATE_KEY / JWT_PUBLIC_KEY     # RS256 PEM
 
 # AI
-AI_PROVIDER=openai|claude
+AI_PROVIDER=openai|claude          # "openai" = any OpenAI-compatible API
 AI_API_KEY
+AI_BASE_URL                        # optional, default https://api.openai.com/v1 (e.g. https://integrate.api.nvidia.com/v1)
+AI_MODEL                           # optional, default gpt-4o-mini (e.g. z-ai/glm-5.2)
 ```
 
 ---

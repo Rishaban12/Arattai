@@ -103,7 +103,10 @@ public class AppBootstrapListener implements ServletContextListener {
         String apiKey   = env("AI_API_KEY");
         return switch (provider.toLowerCase()) {
             case "claude" -> new ClaudeProvider(apiKey);
-            default       -> new OpenAiProvider(apiKey);
+            // Any OpenAI-compatible API (OpenAI, NVIDIA NIM, …) via AI_BASE_URL/AI_MODEL
+            default       -> new OpenAiProvider(apiKey,
+                    Env.getOrDefault("AI_BASE_URL", OpenAiProvider.DEFAULT_BASE_URL),
+                    Env.getOrDefault("AI_MODEL",    OpenAiProvider.DEFAULT_MODEL));
         };
     }
 
