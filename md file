@@ -1,0 +1,292 @@
+# Arattai Chat — Backend (Java / Jakarta Servlets)
+
+REST + WebSocket backend for the Arattai chat frontend. Servlets handle request/response APIs; Jakarta WebSocket handles realtime. Kafka does async persistence, notifications, and AI; Redis handles presence, caching, and cross-instance fan-out.
+
+---
+
+## Tech Stack
+
+| Layer              | Choice                                        | Notes                                     |
+|--------------------|-----------------------------------------------|-------------------------------------------|
+| Runtime            | Java 21                                       | LTS                                       |
+| Web                | Jakarta Servlet 6.0 + Jakarta WebSocket 2.1   | Tomcat 10.1+ (`jakarta.*`, not `javax.*`) |
+| Build              | Maven, WAR packaging                          | Deploy to Tomcat                          |
+| Relational DB      | MySQL + HikariCP                              | Users, groups, subgroups, device tokens   |
+| Message Store      | Cassandra (DataStax Java driver 4.x)          | High write throughput                     |
+| Cache / Presence   | Redis (Lettuce)                               | Pub/Sub for cross-instance fan-out        |
+| Message Broker     | Kafka (`kafka-clients`)                       | Async persist, notifications, AI          |
+| Object Store       | S3 / MinIO (AWS SDK v2)                       | Media; DB stores only the URL             |
+| Auth               | JWT RS256 (`auth0/java-jwt` or `jjwt`)        | + Refresh tokens in Redis                 |
+| JSON               | Jackson                                       | DTO (de)serialization                     |
+| AI                 | Provider abstraction (OpenAI / Claude)        | Swap behind one interface                 |
+
+---
+
+## Project Structure (Maven)
+
+```
+backend/
+├── pom.xml
+└── src/main/
+    ├── java/com/arattai/
+    │   ├── web/                        # Servlets (REST endpoints)
+    │   │   ├── auth/                   # SignupServlet, LoginServlet, RefreshServlet
+    │   │   ├── user/                   # MeServlet, UserServlet
+    │   │   ├── chat/                   # ConversationsServlet, MessageHistoryServlet
+    │   │   ├── group/                  # GroupServlet, SubGroupServlet, MemberServlet
+    │   │   └── media/                  # MediaUploadServlet
+    │   ├── ws/                         # ChatSocket (@ServerEndpoint), frame DTOs, codec
+    │   ├── auth/                       # JwtService, AuthFilter, WsHandshakeAuth
+    │   ├── service/                    # MessageService, GroupService, PresenceService...
+    │   ├── repo/
+    │   │   ├── mysql/                  # UserDao, GroupDao... (JDBC + Hikari)
+    │   │   └── cassandra/              # MessageDao, ConversationDao, ReadStateDao
+    │   ├── cache/                      # RedisClient (presence, counters, cache)
+    │   ├── messaging/                  # KafkaProducerService + consumers
+    │   ├── realtime/                   # LocalSessionRegistry, FanoutService
+    │   ├── ai/                         # AiProvider (interface), OpenAiProvider, ClaudeProvider
+    │   ├── model/                      # Entities
+    │   ├── dto/                        # Request/response DTOs (mirror frontend mockData shapes)
+    │   ├── config/                     # AppConfig (env), bootstrap listener
+    │   └── util/                       # IDs (TimeUUID), hashing, JSON
+    ├── resources/
+    │   ├── db/schema.sql               # MySQL DDL
+    │   └── db/cassandra.cql            # Cassandra DDL
+    └── webapp/WEB-INF/web.xml          # Filter + listener registration
+```
+
+---
+
+## REST Endpoints (Servlets)
+
+```
+# Auth
+POST    /api/auth/signup                    name, email, password, username
+POST    /api/auth/login                     → { accessToken (JWT 1h), refreshToken }
+POST    /api/auth/refresh                   refreshToken → new accessToken
+POST    /api/auth/logout                    Invalidate refresh token
+
+# Users
+GET     /api/users/me
+PUT     /api/users/me
+GET     /api/users/{id}
+
+# Conversations & Messages
+GET     /api/conversations                  Chat list (from conversations_by_user)
+GET     /api/chats/{chatId}/messages        ?before={messageId}&limit=30 — history paging
+
+# Groups
+POST    /api/groups                         Create group
+GET     /api/groups/{id}
+POST    /api/groups/{id}/members
+DELETE  /api/groups/{id}/members/{userId}
+POST    /api/groups/{id}/subgroups
+POST    /api/subgroups/{id}/members
+
+# Media
+POST    /api/media                          Upload → { mediaUrl, meta } (or presigned PUT)
+```
+
+> Every `/api/*` call except auth endpoints passes through `AuthFilter`, which validates the Bearer JWT and puts `userId` on the request. Membership is checked per chat before any read/write.
+
+---
+
+## WebSocket (`/ws`) — Realtime
+
+Single endpoint, JSON frames with a `type` field.
+
+| Direction | Frame Types                                                   |
+|-----------|---------------------------------------------------------------|
+| Inbound   | `SEND_MESSAGE`, `TYPING`, `READ_RECEIPT`, `PING`              |
+| Outbound  | `ACK`, `MESSAGE`, `DELIVERY_RECEIPT`, `READ_RECEIPT`, `PRESENCE`, `TYPING`, `PONG` |
+
+Handshake is authenticated — pass the JWT in the connect query (`/ws?token=...`) and validate before `onOpen`, because cookies are unreliable cross-origin.
+
+```java
+@ServerEndpoint(value = "/ws", configurator = WsHandshakeAuth.class)
+public class ChatSocket {
+
+    @OnOpen
+    public void onOpen(Session session) {
+        Long userId = (Long) session.getUserProperties().get("userId");
+        LocalSessionRegistry.add(userId, session);
+        PresenceService.markOnline(userId);  // Redis key + TTL, heartbeat-refreshed
+    }
+
+    @OnMessage
+    public void onMessage(String json, Session session) {
+        Frame f = Json.parse(json, Frame.class);
+        switch (f.type) {
+            case "SEND_MESSAGE" -> MessageService.handleSend(session, f);
+            case "TYPING"       -> PresenceService.typing(f.chatId, f.senderId);
+            case "READ_RECEIPT" -> MessageService.markRead(f.chatId, f.senderId, f.lastReadId);
+            case "PING"         -> PresenceService.heartbeat(f.senderId);  // refresh TTL
+        }
+    }
+
+    @OnClose
+    public void onClose(Session session) {
+        Long userId = (Long) session.getUserProperties().get("userId");
+        LocalSessionRegistry.remove(userId, session);
+        // Presence expires via TTL if no other sockets remain
+    }
+}
+```
+
+---
+
+## Cross-Instance Fan-out
+
+One JVM only knows its own sockets. With >1 instance, a message must reach a recipient connected elsewhere. Local registry + Redis Pub/Sub solves it.
+
+```java
+// realtime/LocalSessionRegistry.java
+static final Map<Long, Set<Session>> sessions = new ConcurrentHashMap<>();
+
+// realtime/FanoutService.java
+void deliver(List<Long> recipientIds, String payload) {
+    redis.publish("chat-events", Json.write(new FanoutMsg(recipientIds, payload)));
+}
+
+// Subscriber on EVERY instance, registered at boot
+redis.subscribe("chat-events", msg -> {
+    FanoutMsg fm = Json.read(msg, FanoutMsg.class);
+    for (Long uid : fm.recipientIds)
+        for (Session s : LocalSessionRegistry.get(uid))
+            if (s.isOpen()) s.getAsyncRemote().sendText(fm.payload);
+});
+```
+
+---
+
+## Message Send Path (with Idempotency)
+
+```
+client ──SEND_MESSAGE(client_msg_id)──▶ ChatSocket
+
+  1. Handshake already verified user; check chat membership
+  2. Dedup: Cassandra INSERT INTO message_dedup ... IF NOT EXISTS (chat_id, client_msg_id)
+       └─ applied=false → redelivery, return existing message_id, stop
+  3. Assign message_id = TimeUUID (server-side, ordering-safe)
+  4. ACK to sender { client_msg_id, message_id }  → frontend reconciles optimistic bubble
+  5. Fan-out to ONLINE recipients via Redis Pub/Sub (low latency, not behind Kafka)
+  6. Publish to Kafka topic `chat.messages` (async):
+       ├─ persist consumer   → Cassandra messages_by_chat
+       ├─ inbox consumer     → update conversations_by_user, bump unread counters
+       ├─ notify consumer    → push to OFFLINE recipients (FCM/APNs)
+       └─ ai consumer        → only when chat_id starts with ai:
+```
+
+> Kafka is intentionally **off** the perceived-delivery path — delivery is the Pub/Sub hop; persistence, notifications, and AI ride Kafka.
+
+---
+
+## Auth Flow
+
+JWT RS256 — access token: 1h, refresh token: opaque stored in Redis (`refresh:{userId}` TTL 24h).
+
+```java
+// auth/AuthFilter.java  (jakarta.servlet.Filter, mapped to /api/* in web.xml)
+String h = req.getHeader("Authorization");
+if (h == null || !h.startsWith("Bearer ")) { send401(res); return; }
+DecodedJWT jwt = jwtService.verify(h.substring(7));  // throws on bad/expired
+req.setAttribute("userId", Long.valueOf(jwt.getSubject()));
+chain.doFilter(req, res);
+```
+
+---
+
+## Kafka Topics
+
+| Topic                | Key       | Consumers                                          |
+|----------------------|-----------|----------------------------------------------------|
+| `chat.messages`      | `chat_id` | persist, inbox-update, notify, ai                  |
+| `chat.notifications` | —         | push consumer (device_tokens → FCM/APNs)           |
+| `chat.ai.requests`   | —         | AiProvider call                                    |
+| `chat.ai.responses`  | —         | Stored as normal message, fanned out               |
+| `chat.analytics`     | —         | Metrics sink                                       |
+
+---
+
+## Configuration (Environment Variables)
+
+```bash
+# Database
+DB_URL / DB_USER / DB_PASS
+
+# Cassandra
+CASSANDRA_CONTACT_POINTS / KEYSPACE
+
+# Redis
+REDIS_URL
+
+# Kafka
+KAFKA_BOOTSTRAP_SERVERS
+
+# Object Store
+S3_ENDPOINT / S3_BUCKET / S3_KEY / S3_SECRET
+
+# Auth
+JWT_PRIVATE_KEY / JWT_PUBLIC_KEY     # RS256 PEM
+
+# AI
+AI_PROVIDER=openai|claude          # "openai" = any OpenAI-compatible API
+AI_API_KEY
+AI_BASE_URL                        # optional, default https://api.openai.com/v1 (e.g. https://integrate.api.nvidia.com/v1)
+AI_MODEL                           # optional, default gpt-4o-mini (e.g. z-ai/glm-5.2)
+```
+
+---
+
+## Build & Run
+
+```bash
+mvn clean package                          # → target/arattai.war
+
+# Tomcat 10.1+ only (Jakarta namespace)
+cp target/arattai.war $CATALINA_HOME/webapps/
+$CATALINA_HOME/bin/catalina.sh run
+```
+
+---
+
+## Schema
+
+DDL lives in `src/main/resources/db/` — fill these in (columns already defined):
+
+| File              | Store     | Tables                                                                              |
+|-------------------|-----------|-------------------------------------------------------------------------------------|
+| `schema.sql`      | MySQL     | `users`, `groups`, `group_members`, `subgroups`, `subgroup_members`, `device_tokens` |
+| `cassandra.cql`   | Cassandra | `messages_by_chat`, `conversations_by_user`, `read_state`, `message_dedup`          |
+
+---
+
+## Build Checklist
+
+### P0 — Nothing works without these
+
+- [ ] `pom.xml` deps: jakarta servlet/websocket (provided), HikariCP + mysql driver, cassandra-java-driver, lettuce, kafka-clients, java-jwt, jackson, aws-sdk s3
+- [ ] Bootstrap `ServletContextListener` — open Hikari pool, Cassandra session, Redis client, Kafka producer; register Redis `chat-events` subscriber
+- [ ] `JwtService` (RS256) + `AuthFilter` + signup/login/refresh servlets, bcrypt password hashing
+- [ ] `WsHandshakeAuth` configurator — validate `?token=` before `onOpen`
+- [ ] `LocalSessionRegistry` + `FanoutService` (Redis Pub/Sub) — cross-instance delivery
+- [ ] `MessageService.handleSend` — dedup (LWT) → TimeUUID id → ACK → fan-out → Kafka
+- [ ] `ConversationsServlet` (chat list) + `MessageHistoryServlet` (cursor paging by message_id)
+- [ ] DTOs mirroring the frontend `mockData` shapes (one contract, both sides)
+
+### P1 — Core chat features
+
+- [ ] Read receipts + unread: `read_state` writes, Redis `unread:{user}:{chat}` counters
+- [ ] Presence (heartbeat → TTL key) + typing indicators
+- [ ] `MediaUploadServlet` → S3/MinIO, return `mediaUrl` + meta
+- [ ] Group/subgroup CRUD + membership authorization on every chat op
+- [ ] Kafka consumers: persist, inbox-update, notify
+
+### P2 — Hardening & Extras
+
+- [ ] Push notifications: `device_tokens` table, FCM/APNs offline consumer
+- [ ] AI: `AiProvider` interface + streaming, context-window trim, per-user rate/cost caps, prompt-injection handling
+- [ ] Message search (OpenSearch fed off `chat.messages`) — only if search is a real feature
+- [ ] Rate limiting + max message/payload size enforcement
+- [ ] Observability: structured logging, metrics, tracing
+- [ ] TLS termination, secrets manager, refresh-token rotation, optional MFA

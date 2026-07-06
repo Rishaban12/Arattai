@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee
+             https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
+         version="6.0">
+
+  <display-name>Arattai Chat Backend</display-name>
+
+  <!-- Bootstrap listener — initialises all connections at startup -->
+  <listener>
+    <listener-class>com.arattai.config.AppBootstrapListener</listener-class>
+  </listener>
+
+  <!-- Auth filter — validates JWT (HttpOnly cookie or Authorization header) on every /api/* call -->
+  <filter>
+    <filter-name>AuthFilter</filter-name>
+    <filter-class>com.arattai.auth.AuthFilter</filter-class>
+  </filter>
+  <filter-mapping>
+    <filter-name>AuthFilter</filter-name>
+    <url-pattern>/api/*</url-pattern>
+  </filter-mapping>
+
+  <!-- Auth servlets (excluded from AuthFilter inside the filter itself) -->
+  <servlet>
+    <servlet-name>SignupServlet</servlet-name>
+    <servlet-class>com.arattai.web.auth.SignupServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>SignupServlet</servlet-name>
+    <url-pattern>/api/auth/signup</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>LoginServlet</servlet-name>
+    <servlet-class>com.arattai.web.auth.LoginServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>LoginServlet</servlet-name>
+    <url-pattern>/api/auth/login</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>RefreshServlet</servlet-name>
+    <servlet-class>com.arattai.web.auth.RefreshServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>RefreshServlet</servlet-name>
+    <url-pattern>/api/auth/refresh</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>LogoutServlet</servlet-name>
+    <servlet-class>com.arattai.web.auth.LogoutServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>LogoutServlet</servlet-name>
+    <url-pattern>/api/auth/logout</url-pattern>
+  </servlet-mapping>
+
+  <!-- Google OAuth2 servlets -->
+  <servlet>
+    <servlet-name>GoogleAuthServlet</servlet-name>
+    <servlet-class>com.arattai.web.auth.GoogleAuthServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>GoogleAuthServlet</servlet-name>
+    <url-pattern>/api/auth/google</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>GoogleCallbackServlet</servlet-name>
+    <servlet-class>com.arattai.web.auth.GoogleCallbackServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>GoogleCallbackServlet</servlet-name>
+    <url-pattern>/api/auth/google/callback</url-pattern>
+  </servlet-mapping>
+
+  <!-- User servlets -->
+  <servlet>
+    <servlet-name>MeServlet</servlet-name>
+    <servlet-class>com.arattai.web.user.MeServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>MeServlet</servlet-name>
+    <url-pattern>/api/users/me</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>PresenceServlet</servlet-name>
+    <servlet-class>com.arattai.web.user.PresenceServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>PresenceServlet</servlet-name>
+    <url-pattern>/api/presence/*</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>ContactsServlet</servlet-name>
+    <servlet-class>com.arattai.web.user.ContactsServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>ContactsServlet</servlet-name>
+    <url-pattern>/api/contacts</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>UserServlet</servlet-name>
+    <servlet-class>com.arattai.web.user.UserServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>UserServlet</servlet-name>
+    <url-pattern>/api/users/*</url-pattern>
+  </servlet-mapping>
+
+  <!-- Chat servlets -->
+  <servlet>
+    <servlet-name>ConversationsServlet</servlet-name>
+    <servlet-class>com.arattai.web.chat.ConversationsServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>ConversationsServlet</servlet-name>
+    <url-pattern>/api/conversations/*</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>MessageHistoryServlet</servlet-name>
+    <servlet-class>com.arattai.web.chat.MessageHistoryServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>MessageHistoryServlet</servlet-name>
+    <url-pattern>/api/chats/*</url-pattern>
+  </servlet-mapping>
+
+  <!-- Group servlets -->
+  <servlet>
+    <servlet-name>GroupServlet</servlet-name>
+    <servlet-class>com.arattai.web.group.GroupServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>GroupServlet</servlet-name>
+    <url-pattern>/api/groups/*</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>SubGroupServlet</servlet-name>
+    <servlet-class>com.arattai.web.group.SubGroupServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>SubGroupServlet</servlet-name>
+    <url-pattern>/api/subgroups/*</url-pattern>
+  </servlet-mapping>
+
+  <!-- Media servlet -->
+  <servlet>
+    <servlet-name>MediaUploadServlet</servlet-name>
+    <servlet-class>com.arattai.web.media.MediaUploadServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>MediaUploadServlet</servlet-name>
+    <url-pattern>/api/media</url-pattern>
+  </servlet-mapping>
+
+  <!-- AI chat servlet (ephemeral — no persistence) -->
+  <servlet>
+    <servlet-name>AiChatServlet</servlet-name>
+    <servlet-class>com.arattai.web.ai.AiChatServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>AiChatServlet</servlet-name>
+    <url-pattern>/api/ai/chat</url-pattern>
+  </servlet-mapping>
+
+  <session-config>
+    <session-timeout>30</session-timeout>
+  </session-config>
+
+</web-app>
