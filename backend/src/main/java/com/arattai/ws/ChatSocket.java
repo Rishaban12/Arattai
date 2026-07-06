@@ -2,6 +2,7 @@ package com.arattai.ws;
 
 import com.arattai.auth.WsHandshakeAuth;
 import com.arattai.realtime.LocalSessionRegistry;
+import com.arattai.service.CallService;
 import com.arattai.service.MessageService;
 import com.arattai.service.PresenceService;
 import com.arattai.util.Json;
@@ -56,6 +57,8 @@ public class ChatSocket {
             case "SEND_MESSAGE" -> MessageService.handleSend(session, frame);
             case "TYPING"       -> PresenceService.typing(frame.chatId, userId);
             case "READ_RECEIPT" -> MessageService.markRead(frame.chatId, userId, frame.lastReadId);
+            case "CALL_OFFER", "CALL_ANSWER", "CALL_ICE", "CALL_REJECT", "CALL_END"
+                                -> CallService.relay(session, frame);
             case "PING"         -> {
                 PresenceService.heartbeat(userId);
                 sendPong(session);

@@ -69,3 +69,11 @@ export function sendTyping(chatId) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'TYPING', chatId }));
 }
+
+// WebRTC call signaling: CALL_OFFER | CALL_ANSWER | CALL_ICE | CALL_REJECT | CALL_END.
+// The backend relays the frame to targetId's sessions; sdp/candidates travel in `payload`.
+export function sendCallSignal(frame) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(frame));
+  return true;
+}

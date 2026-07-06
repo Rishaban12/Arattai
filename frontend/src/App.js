@@ -5,6 +5,7 @@ import LandingPage from './components/LandingPage';
 import OAuthPage from './components/OAuthPage';
 import SettingsPage from './components/SettingsPage';
 import HamburgerMenu from './components/HamburgerMenu';
+import CallOverlay from './components/CallOverlay';
 import aiLogo from './data/ai-logo.png';
 import { api } from './lib/api';
 import { connectSocket } from './lib/socket';
@@ -48,6 +49,8 @@ export default function App() {
   const [typingEvt, setTypingEvt] = useState(null);
   const [presence, setPresence] = useState({});
   const [me, setMe] = useState(null);
+  const [callEvt, setCallEvt] = useState(null);
+  const [outgoingCall, setOutgoingCall] = useState(null);
 
   const inChat = !showLanding && !showOAuth;
 
@@ -79,6 +82,8 @@ export default function App() {
         setTypingEvt({ chatId: evt.chatId, senderId: evt.senderId, at: Date.now() });
       } else if (evt.type === 'PRESENCE') {
         setPresence(prev => ({ ...prev, [evt.userId]: evt.online }));
+      } else if (evt.type && evt.type.startsWith('CALL_')) {
+        setCallEvt({ ...evt, at: Date.now() });
       }
     });
     return disconnect;
@@ -310,12 +315,22 @@ export default function App() {
           typing={typingEvt}
           presence={presence}
           onDeleteChat={handleDeleteChat}
+          onStartCall={(target, media) => setOutgoingCall({ targetId: target.userId, name: target.name, media, at: Date.now() })}
           onMessageSent={() => setTimeout(fetchConversations, 2000)}
           onSubGroupCreated={handleSubGroupCreated}
           onOpenSubGroup={handleOpenSubGroup}
           onClose={() => setSelectedChat(null)}
         />
       </div>
+      {inChat && (
+        <CallOverlay
+          me={me}
+          contacts={dbContacts}
+          callEvt={callEvt}
+          outgoing={outgoingCall}
+          onOutgoingConsumed={() => setOutgoingCall(null)}
+        />
+      )}
     </React.Fragment>
   );
 }

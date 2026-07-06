@@ -21,7 +21,7 @@ const wsChatId = chat => {
   return null;
 };
 
-export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allSubGroups, groups = [], contacts = [], me = null, incoming = null, typing = null, presence = {}, onDeleteChat, onMessageSent, onClose }) {
+export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allSubGroups, groups = [], contacts = [], me = null, incoming = null, typing = null, presence = {}, onDeleteChat, onMessageSent, onStartCall, onClose }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSubGroupModal, setShowSubGroupModal] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -334,8 +334,8 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
         <div className="header-actions">
           {!isGroup && !isSubGroup && chat.id !== 'arattai-ai' && chat.id !== 'c2' && (
             <>
-              <button className="header-btn" title="Voice call"><PhoneIcon /></button>
-              <button className="header-btn" title="Video call"><VideoIcon /></button>
+              <button className="header-btn" title="Voice call" onClick={() => onStartCall && onStartCall(chat, 'audio')}><PhoneIcon /></button>
+              <button className="header-btn" title="Video call" onClick={() => onStartCall && onStartCall(chat, 'video')}><VideoIcon /></button>
             </>
           )}
           {(isSubGroup || (isGroup && (allSubGroups || []).some(sg => (sg.parentGroupId ?? sg.groupId) === chat.id))) && (
