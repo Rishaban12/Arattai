@@ -47,6 +47,10 @@ md file
 system.md
 Arattai_Database_Design.docx
 *.docx
+README.md
+
+### Claude Code local config ###
+.claude/
 
 ### Logs ###
 logs/
