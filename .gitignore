@@ -45,3 +45,4 @@ build/
 .md file
 .system.md
 .Arattai_Database_Design.docx
+node_modules/
