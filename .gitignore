@@ -42,7 +42,14 @@ build/
 .env
 *.env
 
-.md file
-.system.md
-.Arattai_Database_Design.docx
+### Local docs & notes — keep out of the repo ###
+md file
+system.md
+Arattai_Database_Design.docx
+*.docx
+
+### Logs ###
+logs/
+*.log
+
 node_modules/
