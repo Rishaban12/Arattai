@@ -11,8 +11,8 @@ import jakarta.servlet.http.HttpServletResponse;
  * The Secure flag is ON by default; set COOKIE_SECURE=false in .env for plain-HTTP dev.
  *
  * Cookie format:
- *   access_token  = signed JWT,          Path=/,   Max-Age=3 600 s
- *   refresh_token = "{userId}:{uuid}",   Path=/,   Max-Age=86 400 s
+ *   access_token  = signed JWT,          Path=/,   Max-Age=604 800 s  (7 days)
+ *   refresh_token = "{userId}:{uuid}",   Path=/,   Max-Age=604 800 s  (7 days)
  */
 public final class CookieHelper {
 
@@ -21,8 +21,8 @@ public final class CookieHelper {
     public static final String ACCESS_COOKIE   = "access_token";
     public static final String REFRESH_COOKIE  = "refresh_token";
 
-    public static final int ACCESS_MAX_AGE  = 3_600;       // 1 h
-    public static final int REFRESH_MAX_AGE = 86_400;      // 24 h
+    public static final int ACCESS_MAX_AGE  = 604_800;     // 7 days
+    public static final int REFRESH_MAX_AGE = 604_800;     // 7 days
 
     // Evaluated lazily at first use so Env is populated before this reads it
     private static boolean isSecure() {

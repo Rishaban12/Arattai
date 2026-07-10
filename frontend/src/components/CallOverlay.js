@@ -15,7 +15,7 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(new MediaStream());
+  const remoteStreamRef = useRef(null);  // stored so we can re-attach after remount
   const pendingIceRef = useRef([]);      // remote candidates before remote description is set
   const remoteDescSetRef = useRef(false);
   const offerRef = useRef(null);         // incoming offer SDP, held until user accepts
@@ -24,6 +24,7 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const selfPreviewRef = useRef(null);
 
   callRef.current = call;
 
@@ -45,7 +46,10 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
       localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
     }
-    remoteStreamRef.current = new MediaStream();
+    if (localVideoRef.current)  localVideoRef.current.srcObject  = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    remoteStreamRef.current = null;
     pendingIceRef.current = [];
     remoteDescSetRef.current = false;
     offerRef.current = null;
@@ -67,8 +71,21 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
       }
     };
     pc.ontrack = e => {
-      remoteStreamRef.current.addTrack(e.track);
-      attachRemoteStream();
+      const stream = (e.streams && e.streams[0]) ? e.streams[0] : (() => {
+        const s = remoteStreamRef.current instanceof MediaStream
+          ? remoteStreamRef.current : new MediaStream();
+        s.addTrack(e.track);
+        return s;
+      })();
+      remoteStreamRef.current = stream;
+      const isVideoCall = callRef.current?.media === 'video';
+      // Video call: video element carries both video + audio tracks
+      if (isVideoCall) {
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+      } else {
+        // Audio call: dedicated audio element
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = stream;
+      }
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'failed') teardown('Call connection lost');
@@ -77,16 +94,22 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
     return pc;
   }
 
-  function attachRemoteStream() {
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStreamRef.current;
-    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteStreamRef.current;
+  function attachLocalVideo(stream) {
+    if (localVideoRef.current) localVideoRef.current.srcObject = stream;
   }
 
   async function getMedia(media) {
-    return navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: media === 'video',
-    });
+    if (media !== 'video') {
+      return { stream: await navigator.mediaDevices.getUserMedia({ audio: true, video: false }), hasVideo: false };
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      return { stream, hasVideo: true };
+    } catch {
+      // Camera unavailable — continue as audio-only
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      return { stream, hasVideo: false };
+    }
   }
 
   async function flushPendingIce(pc) {
@@ -107,19 +130,25 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
 
   async function startOutgoing({ targetId, name, media }) {
     const callId = window.crypto?.randomUUID ? window.crypto.randomUUID() : `call${Date.now()}`;
-    let stream;
+    let stream, hasVideo;
     try {
-      stream = await getMedia(media);
+      ({ stream, hasVideo } = await getMedia(media));
     } catch (e) {
-      setNotice(media === 'video' ? 'Camera/microphone access denied' : 'Microphone access denied');
+      setNotice('Microphone access denied');
       setTimeout(() => setNotice(null), 3000);
       return;
+    }
+    const actualMedia = (media === 'video' && hasVideo) ? 'video' : 'audio';
+    if (media === 'video' && !hasVideo) {
+      setNotice('Camera unavailable — calling with audio only');
+      setTimeout(() => setNotice(null), 3000);
     }
     localStreamRef.current = stream;
     const pc = createPeerConnection(targetId, callId);
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
-    setCall({ status: 'outgoing', callId, peerId: targetId, peerName: name, media });
+    setCall({ status: 'outgoing', callId, peerId: targetId, peerName: name, media: actualMedia });
+    setTimeout(() => attachLocalVideo(stream), 0); // after render, set local preview
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -127,7 +156,7 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
       type: 'CALL_OFFER',
       targetId,
       callId,
-      media,
+      media: actualMedia,   // use actualMedia so receiver knows if it's really video
       payload: JSON.stringify(pc.localDescription),
     });
     if (!sent) {
@@ -218,17 +247,22 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
     const cur = callRef.current;
     if (!cur || cur.status !== 'incoming' || !offerRef.current) return;
     clearTimeout(ringTimerRef.current);
-    let stream;
+    let stream, hasVideo;
     try {
-      stream = await getMedia(cur.media);
+      ({ stream, hasVideo } = await getMedia(cur.media));
     } catch (e) {
       sendCallSignal({ type: 'CALL_REJECT', targetId: cur.peerId, callId: cur.callId });
-      teardown(cur.media === 'video' ? 'Camera/microphone access denied' : 'Microphone access denied');
+      teardown('Microphone access denied');
       return;
+    }
+    if (cur.media === 'video' && !hasVideo) {
+      setNotice('Camera unavailable — joining with audio only');
+      setTimeout(() => setNotice(null), 4000);
     }
     localStreamRef.current = stream;
     const pc = createPeerConnection(cur.peerId, cur.callId);
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
+    setTimeout(() => attachLocalVideo(stream), 0); // after render, set local preview
     try {
       await pc.setRemoteDescription(JSON.parse(offerRef.current));
       remoteDescSetRef.current = true;
@@ -287,14 +321,25 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
     return () => clearInterval(t);
   }, [call?.status]);
 
-  // (Re)attach streams whenever the media elements mount
+  // Re-attach streams after render (elements may remount when cameraOff or status toggles)
   useEffect(() => {
     if (!call) return;
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-    }
-    attachRemoteStream();
-  }, [call]);
+    const isVideoCall = call.media === 'video';
+    // setTimeout 0 lets React finish mounting the (conditionally rendered) elements first
+    setTimeout(() => {
+      if (localStreamRef.current) {
+        if (localVideoRef.current)  localVideoRef.current.srcObject  = localStreamRef.current;
+        if (selfPreviewRef.current) selfPreviewRef.current.srcObject = localStreamRef.current;
+      }
+      if (remoteStreamRef.current) {
+        if (isVideoCall && remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        } else if (!isVideoCall && remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStreamRef.current;
+        }
+      }
+    }, 0);
+  }, [call, cameraOff]);
 
   // Clean up everything on unmount (e.g. sign-out)
   useEffect(() => () => teardown(), [teardown]);
@@ -317,68 +362,84 @@ export default function CallOverlay({ me, contacts = [], callEvt, outgoing, onOu
     <div className="call-overlay">
       <div className={`call-window${isVideo && call.status === 'active' ? ' call-window-video' : ''}`}>
 
-        {isVideo && (
-          <div className="call-video-stage" style={{ display: call.status === 'active' ? 'block' : 'none' }}>
-            <video ref={remoteVideoRef} className="call-remote-video" autoPlay playsInline />
-            <video ref={localVideoRef} className="call-local-video" autoPlay playsInline muted />
-          </div>
-        )}
-        {!isVideo && <audio ref={remoteAudioRef} autoPlay />}
-        {isVideo && call.status !== 'active' && (
-          /* keep the remote element mounted so early tracks attach */
-          <audio ref={remoteAudioRef} autoPlay />
-        )}
+        {/* ── Remote video always in DOM so the ref never breaks ── */}
+        <div className="call-video-stage" style={{ display: isVideo && call.status === 'active' ? 'flex' : 'none' }}>
+          <video ref={remoteVideoRef} className="call-remote-video" autoPlay playsInline />
 
-        {(!isVideo || call.status !== 'active') && (
-          <div className="call-peer-info">
-            <div className={call.status !== 'active' ? 'call-avatar-ring' : ''}>
-              <Avatar name={call.peerName} size={86} />
-            </div>
-            <div className="call-peer-name">{call.peerName}</div>
-            <div className="call-status">{statusLabel}</div>
+          {/* Local PiP — avatar when camera off, video when on */}
+          <div className="call-local-pip">
+            {cameraOff
+              ? <div className="call-pip-avatar"><Avatar name={me?.name || '?'} size={48} /></div>
+              : <video ref={localVideoRef} className="call-pip-video" autoPlay playsInline muted />
+            }
+            {muted && <div className="call-pip-muted-badge"><CallMicIcon off /></div>}
           </div>
-        )}
-        {isVideo && call.status === 'active' && (
+
+          {/* Top bar — peer name + timer */}
           <div className="call-video-topbar">
             <span className="call-peer-name">{call.peerName}</span>
             <span className="call-status">{statusLabel}</span>
           </div>
-        )}
 
-        <div className="call-controls">
-          {call.status === 'incoming' ? (
-            <>
-              <button className="call-btn call-btn-accept" onClick={accept} title="Accept">
-                <CallPhoneIcon />
-              </button>
-              <button className="call-btn call-btn-end" onClick={decline} title="Decline">
-                <HangupIcon />
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className={`call-btn call-btn-ctl${muted ? ' call-btn-ctl-off' : ''}`}
-                onClick={toggleMute}
-                title={muted ? 'Unmute' : 'Mute'}
-              >
-                <CallMicIcon off={muted} />
-              </button>
-              {isVideo && (
-                <button
-                  className={`call-btn call-btn-ctl${cameraOff ? ' call-btn-ctl-off' : ''}`}
-                  onClick={toggleCamera}
-                  title={cameraOff ? 'Turn camera on' : 'Turn camera off'}
-                >
-                  <CallCamIcon off={cameraOff} />
-                </button>
-              )}
-              <button className="call-btn call-btn-end" onClick={hangup} title="Hang up">
-                <HangupIcon />
-              </button>
-            </>
-          )}
+          {/* Bottom controls */}
+          <div className="call-controls call-controls-video">
+            <button className={`call-btn call-btn-ctl${muted ? ' call-btn-ctl-off' : ''}`}
+              onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+              <CallMicIcon off={muted} />
+            </button>
+            <button className={`call-btn call-btn-ctl${cameraOff ? ' call-btn-ctl-off' : ''}`}
+              onClick={toggleCamera} title={cameraOff ? 'Turn camera on' : 'Turn camera off'}>
+              <CallCamIcon off={cameraOff} />
+            </button>
+            <button className="call-btn call-btn-end" onClick={hangup} title="Hang up">
+              <HangupIcon />
+            </button>
+          </div>
         </div>
+
+        {/* Audio always mounted — carries remote audio for audio calls and pre-active video */}
+        <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
+
+        {/* ── Ringing / incoming / audio-active UI ── */}
+        {(!isVideo || call.status !== 'active') && (
+          <>
+            {/* Local self-preview during video ringing */}
+            {isVideo && (
+              <video ref={selfPreviewRef} className="call-self-preview" autoPlay playsInline muted />
+            )}
+
+            <div className="call-peer-info">
+              <div className={call.status !== 'active' ? 'call-avatar-ring' : ''}>
+                <Avatar name={call.peerName} size={86} />
+              </div>
+              <div className="call-peer-name">{call.peerName}</div>
+              <div className="call-status">{statusLabel}</div>
+            </div>
+
+            <div className="call-controls">
+              {call.status === 'incoming' ? (
+                <>
+                  <button className="call-btn call-btn-accept" onClick={accept} title="Accept">
+                    <CallPhoneIcon />
+                  </button>
+                  <button className="call-btn call-btn-end" onClick={decline} title="Decline">
+                    <HangupIcon />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className={`call-btn call-btn-ctl${muted ? ' call-btn-ctl-off' : ''}`}
+                    onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+                    <CallMicIcon off={muted} />
+                  </button>
+                  <button className="call-btn call-btn-end" onClick={hangup} title="Hang up">
+                    <HangupIcon />
+                  </button>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

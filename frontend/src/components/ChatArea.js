@@ -21,13 +21,16 @@ const wsChatId = chat => {
   return null;
 };
 
-export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allSubGroups, groups = [], contacts = [], me = null, incoming = null, typing = null, presence = {}, onDeleteChat, onMessageSent, onStartCall, onClose }) {
+export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allSubGroups, groups = [], contacts = [], me = null, incoming = null, typing = null, presence = {}, onDeleteChat, onMessageSent, onStartCall, onClose, onExitGroup }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSubGroupModal, setShowSubGroupModal] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showAddParticipants, setShowAddParticipants] = useState(false);
   const [newSubGroupData, setNewSubGroupData] = useState(null);
   const [groupMemberContacts, setGroupMemberContacts] = useState([]);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [groupInfoMembers, setGroupInfoMembers] = useState([]);
+  const [groupInfoLoading, setGroupInfoLoading] = useState(false);
   const [messages, setMessages] = useState(chat?.messages || []);
   const [aiLoading, setAiLoading] = useState(false);
   const [input, setInput] = useState('');
@@ -38,9 +41,14 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
   const [bellOpen, setBellOpen] = useState(false);
   const [typingFrom, setTypingFrom] = useState(null);
   const [otherOnline, setOtherOnline] = useState(null);
+  const [pendingMedia, setPendingMedia] = useState(null); // { url, contentType, name }
+  const [uploading, setUploading] = useState(false);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const emojiPickerRef = useRef(null);
   const searchInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const menuRef = useRef(null);
+  const fileInputRef = useRef(null);
   const typingTimerRef = useRef(null);
   const lastTypingSentRef = useRef(0);
 
@@ -54,6 +62,11 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
     setAiLoading(false);
     setTypingFrom(null);
     setOtherOnline(null);
+    setPendingMedia(null);
+    setUploading(false);
+    setEmojiPickerOpen(false);
+    setShowGroupInfo(false);
+    setGroupInfoMembers([]);
   }, [chat]);
 
   // Initial presence snapshot for the person in a direct chat
@@ -94,6 +107,8 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
           id: m.messageId,
           sender: senderName(m.senderId),
           text: m.content,
+          mediaUrl: m.mediaUrl,
+          contentType: m.mediaUrl?.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? 'image/' : m.mediaUrl?.endsWith('.pdf') ? 'application/pdf' : undefined,
           time: fmtTime(m.createdAt),
           isMine: m.senderId === me?.id,
         })));
@@ -105,7 +120,7 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
       })
       .catch(e => console.error('load history failed', e));
     return () => { cancelled = true; };
-  }, [chat, me]); // eslint-disable-line
+  }, [chat, me, contacts]); // eslint-disable-line
 
   // Append real-time messages arriving over the WebSocket for this chat
   useEffect(() => {
@@ -115,6 +130,8 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
       id: incoming.messageId,
       sender: senderName(incoming.senderId),
       text: incoming.content,
+      mediaUrl: incoming.mediaUrl,
+      contentType: incoming.mediaUrl?.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? 'image/' : incoming.mediaUrl?.endsWith('.pdf') ? 'application/pdf' : undefined,
       time: fmtTime(incoming.createdAt),
       isMine: false,
     }]);
@@ -164,6 +181,15 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
     return () => document.removeEventListener('mousedown', onClickOutside);
   }, []);
 
+  useEffect(() => {
+    if (!emojiPickerOpen) return;
+    function onClickOutside(e) {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target)) setEmojiPickerOpen(false);
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [emojiPickerOpen]);
+
   if (!chat) {
     return (
       <div className="chat-area empty-chat">
@@ -194,14 +220,20 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
       : 0;
 
   async function sendMessage() {
-    if (!input.trim() || aiLoading) return;
+    if (!input.trim() && !pendingMedia) return;
+    if (aiLoading) return;
     const text = input.trim();
+    const media = pendingMedia;
     setInput('');
+    setPendingMedia(null);
 
     const userMsg = {
       id: `m${Date.now()}`,
       sender: 'You',
       text,
+      mediaUrl: media?.url,
+      contentType: media?.contentType,
+      fileName: media?.name,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isMine: true,
     };
@@ -210,7 +242,7 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
     const chatKey = wsChatId(chat);
     if (chatKey) {
       const clientMsgId = window.crypto?.randomUUID ? window.crypto.randomUUID() : `c${Date.now()}`;
-      const sent = sendSocketMessage(chatKey, text, clientMsgId);
+      const sent = sendSocketMessage(chatKey, text, clientMsgId, media?.url);
       if (!sent) window.alert('Not connected — message not sent');
       else onMessageSent && onMessageSent();
       return;
@@ -247,6 +279,7 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
 
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === 'Escape' && pendingMedia) { setPendingMedia(null); }
   }
 
   // Tell the other members we're typing, at most once every 2s
@@ -258,6 +291,21 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
     if (now - lastTypingSentRef.current > 2000) {
       lastTypingSentRef.current = now;
       sendTyping(chatKey);
+    }
+  }
+
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await api.uploadMedia(file);
+      setPendingMedia({ url: res.mediaUrl, contentType: res.contentType, name: file.name });
+    } catch (err) {
+      window.alert('Upload failed: ' + err.message);
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -309,10 +357,27 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
     <div className="chat-area">
       {/* ── Header ── */}
       <div className="chat-header">
-        {chat.id === 'arattai-ai'
-          ? <img src={aiLogo} alt="Arattai AI" style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-          : <Avatar name={chat.name} size={42} isGroup={isGroup || isSubGroup} />
-        }
+        <div
+          className={`chat-header-identity${(isGroup || isSubGroup) ? ' chat-header-identity-clickable' : ''}`}
+          onClick={() => {
+            if (!isGroup && !isSubGroup) return;
+            if (!showGroupInfo) {
+              setShowGroupInfo(true);
+              setGroupInfoLoading(true);
+              const gid = isGroup ? chat.id : (chat.groupId ?? chat.parentGroupId ?? chat.id);
+              api.getGroupMembers(gid)
+                .then(members => setGroupInfoMembers(members))
+                .catch(() => setGroupInfoMembers([]))
+                .finally(() => setGroupInfoLoading(false));
+            } else {
+              setShowGroupInfo(false);
+            }
+          }}
+        >
+          {chat.id === 'arattai-ai'
+            ? <img src={aiLogo} alt="Arattai AI" style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+            : <Avatar name={chat.name} size={42} isGroup={isGroup || isSubGroup} />
+          }
         <div className="chat-header-info">
           <div className="chat-header-name">{headerName}</div>
           {chat.id !== 'arattai-ai' && (
@@ -330,6 +395,7 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
               )}
             </div>
           )}
+        </div>
         </div>
         <div className="header-actions">
           {!isGroup && !isSubGroup && chat.id !== 'arattai-ai' && chat.id !== 'c2' && (
@@ -500,22 +566,61 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
 
       {/* ── Input ── */}
       <div className="input-area">
+        {/* Pending media preview */}
+        {pendingMedia && (
+          <div className="pending-media-preview">
+            {pendingMedia.contentType?.startsWith('image/') ? (
+              <img src={pendingMedia.url} alt="preview" style={{ maxHeight: 80, maxWidth: 140, borderRadius: 6, objectFit: 'cover' }} />
+            ) : (
+              <div className="pending-file-card">
+                <FileCardIcon type="pdf" />
+                <span className="pending-file-name">{pendingMedia.name}</span>
+              </div>
+            )}
+            <button className="pending-media-remove" onClick={() => setPendingMedia(null)} title="Remove">✕</button>
+          </div>
+        )}
         <div className="input-wrap">
-          <button className="attach-btn" title="Attach">
-            <AttachIcon />
+          {/* Hidden file input — accept images and PDFs */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,application/pdf"
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+          />
+          <button
+            className="attach-btn"
+            title={uploading ? 'Uploading…' : 'Attach image or PDF'}
+            disabled={uploading || chat.id === 'arattai-ai'}
+            onClick={() => fileInputRef.current?.click()}
+            style={uploading ? { opacity: 0.5 } : {}}
+          >
+            {uploading ? <UploadSpinner /> : <AttachIcon />}
           </button>
           <input
             className="message-input"
-            placeholder="Type your message here..."
+            placeholder={pendingMedia ? 'Add a caption…' : 'Type your message here...'}
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
           />
-          {chat.id !== 'arattai-ai' && <button className="emoji-btn" title="Emoji">😊</button>}
+          {chat.id !== 'arattai-ai' && (
+            <div className="emoji-btn-wrap" ref={emojiPickerRef}>
+              {emojiPickerOpen && (
+                <EmojiPicker onSelect={emoji => { setInput(prev => prev + emoji); }} />
+              )}
+              <button
+                className="emoji-btn"
+                title="Emoji"
+                onClick={() => setEmojiPickerOpen(o => !o)}
+              >😊</button>
+            </div>
+          )}
           {chat.id !== 'arattai-ai' && <AiLogoBtn input={input} setInput={setInput} />}
         </div>
-        {input.trim() ? (
-          <button className="send-btn" onClick={sendMessage} title="Send" disabled={aiLoading} style={aiLoading ? { opacity: 0.5 } : {}}>
+        {(input.trim() || pendingMedia) ? (
+          <button className="send-btn" onClick={sendMessage} title="Send" disabled={aiLoading || uploading} style={(aiLoading || uploading) ? { opacity: 0.5 } : {}}>
             <SendIcon />
           </button>
         ) : (
@@ -524,6 +629,30 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
           </button>
         )}
       </div>
+
+      {showGroupInfo && (isGroup || isSubGroup) && (
+        <GroupInfoPanel
+          chat={chat}
+          isGroup={isGroup}
+          me={me}
+          contacts={contacts}
+          members={groupInfoMembers}
+          loading={groupInfoLoading}
+          onClose={() => setShowGroupInfo(false)}
+          onClearMessages={() => setMessages([])}
+          onExitGroup={async () => {
+            const gid = isGroup ? chat.id : (chat.groupId ?? chat.parentGroupId ?? chat.id);
+            try {
+              await api.leaveGroup(gid, me?.id);
+            } catch (e) {
+              window.alert(e.message || 'Could not leave group');
+              return;
+            }
+            setShowGroupInfo(false);
+            onExitGroup && onExitGroup(chat);
+          }}
+        />
+      )}
 
       {showSubGroupModal && (
         <SubGroupModal
@@ -551,6 +680,172 @@ export default function ChatArea({ chat, onSubGroupCreated, onOpenSubGroup, allS
         />
       )}
     </div>
+  );
+}
+
+function GroupInfoPanel({ chat, isGroup, me, contacts, members, loading, onClose, onClearMessages, onExitGroup }) {
+  const [participantsOpen, setParticipantsOpen] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [exiting, setExiting] = useState(false);
+
+  const memberName = m => {
+    if (m.id === me?.id || m.userId === me?.id) return (m.name || 'You') + ' (You)';
+    const c = contacts.find(u => u.id === m.id || u.userId === m.id || u.userId === m.userId);
+    return c?.name || m.name || `User ${m.id ?? m.userId}`;
+  };
+
+  const createdDate = chat.createdAt
+    ? new Date(chat.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : null;
+
+  async function handleExit() {
+    if (!window.confirm(`Exit "${chat.name}"? You will no longer receive messages from this group.`)) return;
+    setExiting(true);
+    try { await onExitGroup(); } finally { setExiting(false); }
+  }
+
+  return (
+    <div className="group-info-overlay" onClick={onClose}>
+      <div className="group-info-panel" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="gip-header">
+          <span className="gip-title">Group info</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="gip-icon-btn" title="Close" onClick={onClose}>
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        <div className="gip-body">
+          {/* Group avatar + name */}
+          <div className="gip-hero">
+            <Avatar name={chat.name} size={72} isGroup />
+            <div className="gip-hero-name">{chat.name}</div>
+            <div className="gip-hero-sub">{chat.participants ?? members.length} participants</div>
+            {createdDate && (
+              <div className="gip-created">Group created on {createdDate}</div>
+            )}
+          </div>
+
+          <div className="gip-divider" />
+
+          {/* Mute */}
+          <button className="gip-row" onClick={() => setMuted(m => !m)}>
+            <span className="gip-row-icon"><MuteIcon /></span>
+            <span className="gip-row-label">Mute group</span>
+            <span className="gip-row-right">
+              <span className={`gip-toggle${muted ? ' gip-toggle-on' : ''}`} />
+            </span>
+          </button>
+
+          <div className="gip-divider" />
+
+          {/* Participants */}
+          <button className="gip-row" onClick={() => setParticipantsOpen(o => !o)}>
+            <span className="gip-row-icon"><GroupInfoIcon /></span>
+            <span className="gip-row-label">Participants</span>
+            <span className="gip-row-right">
+              {participantsOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            </span>
+          </button>
+          {participantsOpen && (
+            <div className="gip-participants">
+              {loading ? (
+                <div className="gip-participants-loading">Loading…</div>
+              ) : members.length === 0 ? (
+                <div className="gip-participants-loading">No members found</div>
+              ) : members.map((m, i) => (
+                <div key={m.id ?? m.userId ?? i} className="gip-participant-row">
+                  <Avatar name={memberName(m)} size={34} />
+                  <span className="gip-participant-name">{memberName(m)}</span>
+                  {(m.role === 'admin' || m.role === 'owner') && (
+                    <span className="gip-participant-role">{m.role}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Starred messages */}
+          <button className="gip-row">
+            <span className="gip-row-icon"><StarIcon filled={false} /></span>
+            <span className="gip-row-label">Starred messages</span>
+            <span className="gip-row-right"><ChevronRightIcon /></span>
+          </button>
+
+          <div className="gip-divider" />
+
+          {/* Media sections */}
+          {['Photos', 'Videos', 'Files', 'Links'].map(label => (
+            <button key={label} className="gip-row">
+              <span className="gip-row-icon"><MediaIcon type={label} /></span>
+              <span className="gip-row-label">{label}</span>
+              <span className="gip-row-right"><ChevronRightIcon /></span>
+            </button>
+          ))}
+
+          <div className="gip-divider" />
+
+          {/* Clear messages */}
+          <button className="gip-row gip-row-danger" onClick={() => { if (window.confirm('Clear all messages?')) { onClearMessages(); onClose(); } }}>
+            <span className="gip-row-icon"><TrashIcon /></span>
+            <span className="gip-row-label">Clear messages</span>
+          </button>
+
+          {/* Exit group */}
+          {isGroup && (
+            <button className="gip-row gip-row-danger" onClick={handleExit} disabled={exiting}>
+              <span className="gip-row-icon"><ExitIcon /></span>
+              <span className="gip-row-label">{exiting ? 'Leaving…' : 'Exit group'}</span>
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+      <polyline points="9 18 15 12 9 6"/>
+    </svg>
+  );
+}
+
+function ExitIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+      <polyline points="16 17 21 12 16 7"/>
+      <line x1="21" y1="12" x2="9" y2="12"/>
+    </svg>
+  );
+}
+
+function MediaIcon({ type }) {
+  if (type === 'Photos') return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+      <polyline points="21 15 16 10 5 21"/>
+    </svg>
+  );
+  if (type === 'Videos') return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+    </svg>
+  );
+  if (type === 'Files') return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+    </svg>
+  );
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+    </svg>
   );
 }
 
@@ -586,7 +881,21 @@ function MessageBubble({ msg, isNew }) {
         ) : msg.isLink ? (
           <a className="msg-link" href={msg.text} target="_blank" rel="noreferrer">{msg.text}</a>
         ) : (
-          msg.text && <div className="msg-text">{msg.text}</div>
+          <>
+            {msg.mediaUrl && msg.contentType?.startsWith('image/') && (
+              <a href={msg.mediaUrl} target="_blank" rel="noreferrer">
+                <img src={msg.mediaUrl} alt="attachment" style={{ maxWidth: 240, maxHeight: 200, borderRadius: 8, display: 'block', marginBottom: msg.text ? 6 : 0, objectFit: 'cover' }} />
+              </a>
+            )}
+            {msg.mediaUrl && msg.contentType === 'application/pdf' && (
+              <a href={msg.mediaUrl} target="_blank" rel="noreferrer" className="msg-file-card">
+                <FileCardIcon type="pdf" />
+                <span className="msg-file-name">{msg.fileName || 'Document.pdf'}</span>
+                <span className="msg-file-dl">↓</span>
+              </a>
+            )}
+            {msg.text && <div className="msg-text">{msg.text}</div>}
+          </>
         )}
 
         {msg.linkPreview && (
@@ -615,6 +924,44 @@ function MessageBubble({ msg, isNew }) {
             <ForwardIcon />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const EMOJI_CATEGORIES = [
+  { label: '😊', name: 'Smileys', emojis: ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😚','😙','😋','😛','😜','🤪','😝','🤑','🤗','🤔','🤐','🤨','😐','😑','😶','🙄','😏','😒','😞','😔','😟','😕','🙁','☹️','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰','😥','😓','😴','🥱','🤤','😪','🤢','🤮','🤧','🤒','🤕','🥴','😵','💫','🤠','🥸','🥳','😎','🤓','🧐','😈','👿','💀','☠️','💩','🤡','👹','👺','👻','👽','👾','🤖'] },
+  { label: '👋', name: 'Gestures', emojis: ['👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','🖕','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','✍️','💅','🤳','💪','🦾','🫶','💋','👄','🦷','👅','👁️','👀','👃','👂','🫀','🫁','🧠','🦴'] },
+  { label: '🐶', name: 'Animals', emojis: ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐻‍❄️','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐒','🐔','🐧','🐦','🐤','🦆','🦅','🦉','🦇','🐺','🐗','🐴','🦄','🐝','🦋','🐛','🐌','🐞','🐜','🦟','🦗','🕷️','🦂','🐢','🐍','🦎','🦖','🦕','🐙','🦑','🦐','🦞','🦀','🐡','🐠','🐟','🐬','🐳','🐋','🦈','🦭','🐊','🐅','🐆','🦓','🦍','🦧','🦣','🐘','🦛','🦏','🐪','🐫','🦒','🦘','🐃','🐂','🐄','🐎','🐖','🐏','🐑','🦙','🐐','🦌','🐕','🐩','🦮','🐈','🐈‍⬛','🐓','🦃','🦤','🦚','🦜','🦢','🦩','🕊️','🐇','🦝','🦨','🦡','🦫','🦦','🦥','🐁','🐀','🐿️','🦔'] },
+  { label: '🍎', name: 'Food', emojis: ['🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍈','🍑','🥭','🍍','🥥','🥝','🍅','🍆','🥑','🥦','🥬','🥒','🌶️','🫑','🥕','🧄','🧅','🥔','🍠','🥐','🥯','🍞','🥖','🥨','🧀','🥚','🍳','🧈','🥞','🧇','🥓','🥩','🍗','🍖','🌭','🍔','🍟','🍕','🥪','🥙','🧆','🌮','🌯','🥗','🥘','🍝','🍜','🍲','🍛','🍣','🍱','🥟','🍤','🍙','🍚','🍘','🍥','🥮','🍢','🧁','🍰','🎂','🍮','🍭','🍬','🍫','🍿','🍩','🍪','🌰','🥜','🍯','🍺','🍻','🥂','🍷','🥃','🍸','🍹','🍾','☕','🍵','🧃','🥤','🧋'] },
+  { label: '✈️', name: 'Travel', emojis: ['✈️','🛫','🛬','🛩️','🚀','🛸','🚁','🚂','🚃','🚄','🚅','🚆','🚇','🚈','🚉','🚊','🚝','🚞','🚋','🚌','🚍','🚎','🚐','🚑','🚒','🚓','🚔','🚕','🚖','🚗','🚘','🚙','🛻','🚚','🚛','🚜','🏎️','🏍️','🛵','🚲','🛴','🛹','🛼','⛽','🚧','🚦','🚥','🛑','🗺️','🗽','🗼','🏰','🏯','🏟️','🎡','🎢','🎠','⛲','🌁','🏔️','⛰️','🌋','🗻','🏕️','🏖️','🏜️','🏝️','🏞️','🏗️','🏘️','🏚️','🏠','🏡','🏢','🏣','🏤','🏥','🏦','🏨','🏩','🏪','🏫','🏬','🏭','💒','⛪','🕌','🛕','🕍','⛩️','🕋','⛺','🌐','🧭','🌅','🌄','🌠','🎇','🎆','🌇','🌆','🏙️','🌃','🌌','🌉','🌁'] },
+  { label: '⚽', name: 'Activity', emojis: ['⚽','🏀','🏈','⚾','🥎','🏐','🏉','🎾','🥏','🎱','🏓','🏸','🏒','🏑','🥍','🏏','🪃','🥅','⛳','🪁','🛝','🏹','🎣','🤿','🥊','🥋','🎽','🛹','🛷','⛸️','🥌','🎿','🎯','🪀','🪆','🎭','🎨','🎬','🎤','🎧','🎼','🎻','🪕','🎹','🥁','🪘','🎷','🎺','🪗','🎸','🎮','🕹️','🎲','♟️','🎳','🎰','🧩'] },
+  { label: '💡', name: 'Objects', emojis: ['📱','📲','💻','⌨️','🖥️','🖨️','🖱️','💽','💾','💿','📀','📷','📸','📹','🎥','📽️','🎞️','📞','☎️','📟','📠','📺','📻','🧭','⏰','⌛','⏳','🧲','💡','🔦','🕯️','🪔','🧱','🪞','🪟','🛋️','🪑','🚿','🛁','🧹','🧺','🧻','🧼','🧴','🪒','🧽','🛒','🚪','🛏️','🧸','🪆','🎎','🎍','🎏','🎐','🎑','🧧','🎀','🎁','🎗️','🎟️','🎫','🏆','🥇','🥈','🥉','🏅','🎖️','🔑','🗝️','🔒','🔓','🔔','🔕','🔇','📢','📣','📯','🔈','📡','🔭','🔬','💈','🪄','🎩','💎','🔮','🪬','🧿','💊','💉','🩺','🩹','🩻','🩼','🦯','🦺'] },
+  { label: '❤️', name: 'Symbols', emojis: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','❤️‍🔥','❤️‍🩹','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉️','☸️','✡️','🛐','♻️','✅','❎','🆗','🆙','🆒','🆕','🆓','💯','🆖','🔞','🚫','🔴','🟠','🟡','🟢','🔵','🟣','⚫','⚪','🟤','🔺','🔻','🔷','🔶','🔹','🔸','🔳','🔲','⭐','🌟','💫','✨','🌙','☀️','🌤️','⛅','🌦️','🌧️','⛈️','🌩️','🌨️','🌊','🌈','☔','⚡','❄️','☃️','⛄','🔥','💧'] },
+];
+
+function EmojiPicker({ onSelect }) {
+  const [activeCategory, setActiveCategory] = useState(0);
+  return (
+    <div className="emoji-picker">
+      <div className="emoji-picker-tabs">
+        {EMOJI_CATEGORIES.map((cat, i) => (
+          <button
+            key={cat.name}
+            className={`emoji-picker-tab${activeCategory === i ? ' active' : ''}`}
+            title={cat.name}
+            onClick={() => setActiveCategory(i)}
+          >
+            {cat.label}
+          </button>
+        ))}
+      </div>
+      <div className="emoji-picker-grid">
+        {EMOJI_CATEGORIES[activeCategory].emojis.map((emoji, i) => (
+          <button key={i} className="emoji-item" onClick={() => onSelect(emoji)}>
+            {emoji}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -831,6 +1178,20 @@ function AiLogoBtn({ input, setInput }) {
         style={{ cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.35 : 1 }}
       />
     </div>
+  );
+}
+
+function UploadSpinner() {
+  return (
+    <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid #334155', borderTopColor: '#4a9eff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+  );
+}
+
+function FileCardIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="#ef4444">
+      <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/>
+    </svg>
   );
 }
 

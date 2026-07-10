@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { api } from '../lib/api';
 
 const menuItems = [
   { key: 'profile', label: 'Profile', icon: <ProfileIcon /> },
@@ -8,10 +9,26 @@ const menuItems = [
   { key: 'notifications', label: 'Notifications', icon: <BellIcon /> },
 ];
 
-export default function SettingsPage({ onClose, onSignOut, darkMode, onToggleDark }) {
+export default function SettingsPage({ onClose, onSignOut, darkMode, onToggleDark, me, onUpdateMe }) {
   const [active, setActive] = useState('profile');
-  const [name, setName] = useState('Rishaban');
+  const [name, setName] = useState(me?.name || '');
   const [bio, setBio] = useState("Hello! I'm using Arattai");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  async function handleSave() {
+    if (!name.trim()) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      const updated = await api.updateMe(name.trim());
+      onUpdateMe && onUpdateMe(updated);
+    } catch (e) {
+      setSaveError(e.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="settings-overlay" onClick={onClose}>
@@ -57,7 +74,7 @@ export default function SettingsPage({ onClose, onSignOut, darkMode, onToggleDar
                   />
                 </div>
                 <div className="settings-field">
-                  <label className="settings-field-label">Bio <span className="required-star">*</span></label>
+                  <label className="settings-field-label">Bio</label>
                   <textarea
                     className="settings-textarea"
                     value={bio}
@@ -65,6 +82,14 @@ export default function SettingsPage({ onClose, onSignOut, darkMode, onToggleDar
                     rows={3}
                   />
                 </div>
+                {saveError && <div className="settings-save-error">{saveError}</div>}
+                <button
+                  className="settings-save-btn"
+                  onClick={handleSave}
+                  disabled={saving || !name.trim()}
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
               </div>
 
               <div className="settings-section-title">Phone number</div>

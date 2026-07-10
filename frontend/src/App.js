@@ -37,6 +37,7 @@ export default function App() {
   const authError = params.get('reason');
   const [showLanding, setShowLanding] = useState(authParam !== 'success' && authParam !== 'error');
   const [showOAuth,   setShowOAuth]   = useState(authParam === 'error');
+  const [authChecked, setAuthChecked] = useState(!!authParam);
   const [showSettings, setShowSettings] = useState(false);
   const [showHamburger, setShowHamburger] = useState(false);
   const [darkMode, setDarkMode] = useState(true);
@@ -55,7 +56,16 @@ export default function App() {
   const inChat = !showLanding && !showOAuth;
 
   useEffect(() => {
-    if (authParam) window.history.replaceState({}, '', '/');
+    if (authParam) { window.history.replaceState({}, '', '/'); return; }
+    // On refresh with no URL param: check if an HttpOnly cookie session already exists
+    api.getMe()
+      .then(user => {
+        setMe(user);
+        setShowLanding(false);
+        setShowOAuth(false);
+      })
+      .catch(() => { /* 401 — stay on landing */ })
+      .finally(() => setAuthChecked(true));
   }, []); // eslint-disable-line
 
   useEffect(() => {
@@ -82,6 +92,8 @@ export default function App() {
         setTypingEvt({ chatId: evt.chatId, senderId: evt.senderId, at: Date.now() });
       } else if (evt.type === 'PRESENCE') {
         setPresence(prev => ({ ...prev, [evt.userId]: evt.online }));
+      } else if (evt.type === 'GROUP_ADDED' || evt.type === 'SUBGROUP_ADDED') {
+        fetchGroups();
       } else if (evt.type && evt.type.startsWith('CALL_')) {
         setCallEvt({ ...evt, at: Date.now() });
       }
@@ -206,6 +218,21 @@ export default function App() {
     setSelectedChat(newGroup);
   }
 
+  function handleExitGroup(chat) {
+    if (chat.type === 'group') {
+      setDbGroups(prev => prev.filter(g => g.id !== chat.id));
+      setDbSubGroups(prev => prev.filter(sg => (sg.groupId ?? sg.parentGroupId) !== chat.id));
+    } else if (chat.type === 'subgroup') {
+      setDbSubGroups(prev => prev.filter(sg => sg.id !== chat.id));
+      setDbGroups(prev => prev.map(g =>
+        g.id === (chat.groupId ?? chat.parentGroupId)
+          ? { ...g, subGroups: (g.subGroups || []).filter(sg => sg.id !== chat.id) }
+          : g
+      ));
+    }
+    setSelectedChat(null);
+  }
+
   async function handleSubGroupCreated(newSg) {
     const shaped = { ...newSg, type: 'subgroup', isGroup: true, lastMessage: '', time: '' };
     setDbSubGroups(prev => [...prev, shaped]);
@@ -224,13 +251,21 @@ export default function App() {
     }
   }
 
+  if (!authChecked) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0f172a' }}>
+        <div style={{ width: 32, height: 32, border: '3px solid #334155', borderTopColor: '#4a9eff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+      </div>
+    );
+  }
+
   return (
     <React.Fragment>
       {showLanding && (
         <LandingPage onEnter={() => { setShowLanding(false); setShowOAuth(true); }} />
       )}
       <OAuthPage visible={!showLanding && showOAuth} error={authError} />
-      {showSettings && <SettingsPage onClose={() => setShowSettings(false)} onSignOut={handleSignOut} darkMode={darkMode} onToggleDark={() => setDarkMode(d => !d)} />}
+      {showSettings && <SettingsPage onClose={() => setShowSettings(false)} onSignOut={handleSignOut} darkMode={darkMode} onToggleDark={() => setDarkMode(d => !d)} me={me} onUpdateMe={updated => setMe(updated)} />}
       <div className="app-container">
         <div className="left-nav">
 
@@ -292,7 +327,7 @@ export default function App() {
           </div>
 
           {/* User avatar */}
-          <div className="user-avatar-nav" onClick={() => setShowSettings(true)} style={{ cursor: 'pointer' }}>R</div>
+          <div className="user-avatar-nav" onClick={() => setShowSettings(true)} style={{ cursor: 'pointer' }}>{me?.name?.[0]?.toUpperCase() || '?'}</div>
         </div>
 
         <Sidebar
@@ -319,6 +354,7 @@ export default function App() {
           onMessageSent={() => setTimeout(fetchConversations, 2000)}
           onSubGroupCreated={handleSubGroupCreated}
           onOpenSubGroup={handleOpenSubGroup}
+          onExitGroup={handleExitGroup}
           onClose={() => setSelectedChat(null)}
         />
       </div>

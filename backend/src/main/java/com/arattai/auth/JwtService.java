@@ -20,7 +20,7 @@ public class JwtService {
     private static final JwtService INSTANCE = new JwtService();
     public static JwtService get() { return INSTANCE; }
 
-    private static final long ACCESS_TTL_SECONDS = 3600;          // 1 hour
+    private static final long ACCESS_TTL_SECONDS = 604_800;       // 7 days
 
     private final Algorithm   algorithm;
     private final JWTVerifier verifier;
