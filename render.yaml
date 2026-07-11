@@ -4,6 +4,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
+    port: 8080
     envVars:
       - key: DB_URL
         sync: false
