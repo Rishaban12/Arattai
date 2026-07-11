@@ -39,28 +39,43 @@ public class AppBootstrapListener implements ServletContextListener {
     @Override
     public void contextInitialized(ServletContextEvent sce) {
         log.info("Arattai backend starting up...");
-        loadDotEnv();
-        Env.load(dotenv); // make .env values available to all singletons via Env.get()
+        try {
+            loadDotEnv();
+            Env.load(dotenv);
 
-        HikariDataSource    ds       = initMysql();
-        CqlSession          cassandra = initCassandra();
-        RedisClient         redis    = initRedis();
-        KafkaProducerService kafka   = new KafkaProducerService();
-        AiProvider          ai       = initAiProvider();
+            log.info("Initializing MySQL...");
+            HikariDataSource ds = initMysql();
+            log.info("MySQL OK");
 
-        AppConfig cfg = new AppConfig(ds, cassandra, redis, kafka, ai);
-        AppConfig.set(cfg);
+            log.info("Initializing Cassandra...");
+            CqlSession cassandra = initCassandra();
+            log.info("Cassandra OK");
 
-        // Subscribe to cross-instance fan-out channel on every node
-        FanoutService.startSubscriber(redis);
+            log.info("Initializing Redis...");
+            RedisClient redis = initRedis();
+            log.info("Redis OK");
 
-        // Start Kafka consumers in background threads
-        new Thread(new PersistConsumer(),  "kafka-persist").start();
-        new Thread(new InboxConsumer(),    "kafka-inbox").start();
-        new Thread(new NotifyConsumer(),   "kafka-notify").start();
-        new Thread(new AiConsumer(),       "kafka-ai").start();
+            log.info("Initializing Kafka...");
+            KafkaProducerService kafka = new KafkaProducerService();
+            log.info("Kafka OK");
 
-        log.info("Arattai backend started.");
+            AiProvider ai = initAiProvider();
+
+            AppConfig cfg = new AppConfig(ds, cassandra, redis, kafka, ai);
+            AppConfig.set(cfg);
+
+            FanoutService.startSubscriber(redis);
+
+            new Thread(new PersistConsumer(),  "kafka-persist").start();
+            new Thread(new InboxConsumer(),    "kafka-inbox").start();
+            new Thread(new NotifyConsumer(),   "kafka-notify").start();
+            new Thread(new AiConsumer(),       "kafka-ai").start();
+
+            log.info("Arattai backend started.");
+        } catch (Exception e) {
+            log.error("STARTUP FAILED: {}", e.getMessage(), e);
+            throw new RuntimeException("Arattai startup failed", e);
+        }
     }
 
     @Override
@@ -76,9 +91,10 @@ public class AppBootstrapListener implements ServletContextListener {
         hc.setJdbcUrl(env("DB_URL"));
         hc.setUsername(env("DB_USER"));
         hc.setPassword(Env.getOrDefault("DB_PASS", ""));
-        hc.setMaximumPoolSize(20);
-        hc.setMinimumIdle(5);
-        hc.setConnectionTimeout(3000);
+        hc.setMaximumPoolSize(5);
+        hc.setMinimumIdle(1);
+        hc.setConnectionTimeout(30000);
+        hc.setInitializationFailTimeout(60000);
         hc.setPoolName("arattai-mysql");
         return new HikariDataSource(hc);
     }
