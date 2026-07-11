@@ -88,6 +88,7 @@ public class AppBootstrapListener implements ServletContextListener {
 
     private HikariDataSource initMysql() {
         HikariConfig hc = new HikariConfig();
+        hc.setDriverClassName("com.mysql.cj.jdbc.Driver");
         hc.setJdbcUrl(env("DB_URL"));
         hc.setUsername(env("DB_USER"));
         hc.setPassword(Env.getOrDefault("DB_PASS", ""));
