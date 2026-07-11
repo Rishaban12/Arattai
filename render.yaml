@@ -11,13 +11,25 @@ services:
         sync: false
       - key: DB_PASS
         sync: false
-      - key: CASSANDRA_CONTACT_POINTS
+      - key: CASSANDRA_BUNDLE_BASE64
+        sync: false
+      - key: CASSANDRA_CLIENT_ID
+        sync: false
+      - key: CASSANDRA_CLIENT_SECRET
         sync: false
       - key: CASSANDRA_KEYSPACE
         sync: false
       - key: REDIS_URL
         sync: false
       - key: KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+      - key: KAFKA_SASL_MECHANISM
+        sync: false
+      - key: KAFKA_SASL_USERNAME
+        sync: false
+      - key: KAFKA_SASL_PASSWORD
+        sync: false
+      - key: KAFKA_SSL_CA_CERT
         sync: false
       - key: S3_ENDPOINT
         sync: false
@@ -48,4 +60,4 @@ services:
       - key: FRONTEND_URL
         sync: false
       - key: COOKIE_SECURE
-        value: "false"
+        value: "true"
