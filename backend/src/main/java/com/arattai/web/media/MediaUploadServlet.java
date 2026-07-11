@@ -16,7 +16,10 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 
 import java.io.File;
 import java.io.IOException;
@@ -24,6 +27,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.Files;
+import java.time.Duration;
 import java.util.UUID;
 
 @MultipartConfig(maxFileSize = 50 * 1024 * 1024L) // 50 MB
@@ -35,7 +39,8 @@ public class MediaUploadServlet extends HttpServlet {
     private static final File LOCAL_DIR = new File(
             System.getProperty("user.home"), "arattai-media");
 
-    private S3Client s3;
+    private S3Client   s3;
+    private S3Presigner presigner;
 
     @Override
     public void init() {
@@ -47,14 +52,21 @@ public class MediaUploadServlet extends HttpServlet {
                 && accessKey != null && !accessKey.isBlank()
                 && secretKey != null && !secretKey.isBlank()) {
             try {
+                StaticCredentialsProvider creds = StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(accessKey, secretKey));
+                URI endpointUri = URI.create(endpoint);
                 s3 = S3Client.builder()
-                        .endpointOverride(URI.create(endpoint))
-                        .credentialsProvider(StaticCredentialsProvider.create(
-                                AwsBasicCredentials.create(accessKey, secretKey)))
+                        .endpointOverride(endpointUri)
+                        .credentialsProvider(creds)
                         .region(Region.US_EAST_1)
                         .forcePathStyle(true)
                         .build();
-                log.info("MediaUploadServlet: S3/MinIO configured at {}", endpoint);
+                presigner = S3Presigner.builder()
+                        .endpointOverride(endpointUri)
+                        .credentialsProvider(creds)
+                        .region(Region.US_EAST_1)
+                        .build();
+                log.info("MediaUploadServlet: S3 configured at {}", endpoint);
             } catch (Exception e) {
                 log.warn("MediaUploadServlet: S3 init failed, will use local disk: {}", e.getMessage());
                 s3 = null;
@@ -94,10 +106,21 @@ public class MediaUploadServlet extends HttpServlet {
         Servlets.created(res, new MediaUploadResponse(mediaUrl, contentType, size));
     }
 
-    /** GET /api/media/{key} — serve a locally-stored file */
+    /**
+     * GET /api/media/presign?key=media/uuid.jpg — refresh a pre-signed URL for a private B2 object.
+     * GET /api/media/{key}                       — serve a locally-stored file (fallback mode).
+     */
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse res)
             throws ServletException, IOException {
+
+        // Presign refresh endpoint (used when the 7-day URL has expired)
+        String keyParam = req.getParameter("key");
+        if (keyParam != null && !keyParam.isBlank() && presigner != null) {
+            String freshUrl = presignUrl(Env.get("S3_BUCKET"), keyParam);
+            Servlets.ok(res, java.util.Map.of("url", freshUrl));
+            return;
+        }
 
         String pathInfo = req.getPathInfo(); // "/{key}"
         if (pathInfo == null || pathInfo.length() <= 1) {
@@ -134,7 +157,18 @@ public class MediaUploadServlet extends HttpServlet {
                     .build();
             s3.putObject(put, RequestBody.fromInputStream(in, size));
         }
-        return Env.get("S3_ENDPOINT") + "/" + bucket + "/" + s3Key;
+        return presignUrl(bucket, s3Key);
+    }
+
+    private String presignUrl(String bucket, String s3Key) {
+        GetObjectPresignRequest req = GetObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofDays(7))
+                .getObjectRequest(GetObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(s3Key)
+                        .build())
+                .build();
+        return presigner.presignGetObject(req).url().toString();
     }
 
     private String saveLocally(String key, Part filePart, HttpServletRequest req) throws IOException {
@@ -148,6 +182,12 @@ public class MediaUploadServlet extends HttpServlet {
         int    port   = req.getServerPort();
         String portStr = (port == 80 || port == 443) ? "" : ":" + port;
         return scheme + "://" + host + portStr + "/api/media/" + key;
+    }
+
+    @Override
+    public void destroy() {
+        if (presigner != null) presigner.close();
+        if (s3 != null)        s3.close();
     }
 
     private String extensionFor(String contentType) {

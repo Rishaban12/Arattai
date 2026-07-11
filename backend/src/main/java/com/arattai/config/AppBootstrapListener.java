@@ -11,6 +11,7 @@ import com.arattai.messaging.NotifyConsumer;
 import com.arattai.messaging.PersistConsumer;
 import com.arattai.realtime.FanoutService;
 import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.CqlSessionBuilder;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import jakarta.servlet.ServletContextEvent;
@@ -22,7 +23,9 @@ import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -81,17 +84,34 @@ public class AppBootstrapListener implements ServletContextListener {
     }
 
     private CqlSession initCassandra() {
-        String contactPoints = env("CASSANDRA_CONTACT_POINTS");
-        String keyspace      = env("CASSANDRA_KEYSPACE");
+        String keyspace  = env("CASSANDRA_KEYSPACE");
+        String bundleB64 = Env.getOrDefault("CASSANDRA_BUNDLE_BASE64", "");
 
-        return CqlSession.builder()
-                .addContactPoints(Arrays.stream(contactPoints.split(","))
-                        .map(String::trim)
-                        .map(h -> InetSocketAddress.createUnresolved(h, 9042))
-                        .toList())
-                .withLocalDatacenter("datacenter1")
-                .withKeyspace(keyspace)
-                .build();
+        CqlSessionBuilder builder = CqlSession.builder().withKeyspace(keyspace);
+
+        if (!bundleB64.isEmpty()) {
+            // Astra DB: decode the secure-connect bundle stored as base64 env var
+            try {
+                byte[] bundleBytes = Base64.getDecoder().decode(bundleB64);
+                Path tmp = Files.createTempFile("astra-bundle-", ".zip");
+                Files.write(tmp, bundleBytes);
+                tmp.toFile().deleteOnExit();
+                builder.withCloudSecureConnectBundle(tmp)
+                       .withAuthCredentials(env("CASSANDRA_CLIENT_ID"), env("CASSANDRA_CLIENT_SECRET"));
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to write Astra secure connect bundle", e);
+            }
+        } else {
+            // Local Cassandra
+            String contactPoints = env("CASSANDRA_CONTACT_POINTS");
+            builder.addContactPoints(Arrays.stream(contactPoints.split(","))
+                           .map(String::trim)
+                           .map(h -> InetSocketAddress.createUnresolved(h, 9042))
+                           .toList())
+                   .withLocalDatacenter("datacenter1");
+        }
+
+        return builder.build();
     }
 
     private RedisClient initRedis() {
