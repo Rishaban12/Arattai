@@ -1,5 +1,6 @@
 package com.arattai.web.group;
 
+import com.arattai.config.AppConfig;
 import com.arattai.dto.group.AddMemberRequest;
 import com.arattai.dto.group.CreateGroupRequest;
 import com.arattai.dto.group.CreateSubGroupRequest;
@@ -7,6 +8,7 @@ import com.arattai.dto.group.GroupResponse;
 import com.arattai.dto.group.SubGroupResponse;
 import com.arattai.model.Group;
 import com.arattai.model.SubGroup;
+import com.arattai.realtime.FanoutService;
 import com.arattai.service.GroupService;
 import com.arattai.util.Json;
 import com.arattai.util.Servlets;
@@ -68,6 +70,12 @@ public class GroupServlet extends HttpServlet {
                     return;
                 }
                 GroupService.addMember(groupId, body.userId, body.role);
+                // Notify the newly-added member in real-time so their sidebar updates
+                FanoutService.deliver(
+                    List.of(body.userId),
+                    Json.write(Map.of("type", "GROUP_ADDED", "groupId", groupId)),
+                    AppConfig.get().getRedisClient()
+                );
                 Servlets.ok(res, Map.of("message", "Member added"));
 
             } else if (segments.length == 3 && segments[2].equals("subgroups")) {

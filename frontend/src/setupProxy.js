@@ -148,11 +148,12 @@ function httpsPost(hostname, urlPath, headers, bodyStr) {
 }
 
 // ── Provider calls ────────────────────────────────────────────────────────
-async function callOpenAI(apiKey, messages, temperature = 0.3) {
-  const body = JSON.stringify({ model: 'gpt-4o-mini', messages, temperature, max_tokens: 500 });
+async function callOpenAI(apiKey, messages, temperature = 0.3, baseUrl = 'https://api.openai.com/v1', model = 'gpt-4o-mini') {
+  const url      = new URL(baseUrl.replace(/\/+$/, '') + '/chat/completions');
+  const body     = JSON.stringify({ model, messages, temperature, max_tokens: 1024 });
   const { status, body: resp } = await httpsPost(
-    'api.openai.com',
-    '/v1/chat/completions',
+    url.hostname,
+    url.pathname + url.search,
     { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`, 'Content-Length': Buffer.byteLength(body) },
     body,
   );
@@ -187,15 +188,17 @@ function readBody(req) {
 
 function getCredentials() {
   const env      = loadEnv();
-  const apiKey   = process.env.AI_API_KEY  || env.AI_API_KEY  || '';
-  const provider = (process.env.AI_PROVIDER || env.AI_PROVIDER || 'openai').toLowerCase();
-  return { apiKey, provider };
+  const apiKey   = process.env.AI_API_KEY   || env.AI_API_KEY   || '';
+  const provider = (process.env.AI_PROVIDER  || env.AI_PROVIDER  || 'openai').toLowerCase();
+  const baseUrl  = process.env.AI_BASE_URL   || env.AI_BASE_URL  || 'https://api.openai.com/v1';
+  const model    = process.env.AI_MODEL      || env.AI_MODEL     || 'gpt-4o-mini';
+  return { apiKey, provider, baseUrl, model };
 }
 
-async function callProvider(provider, apiKey, messages, temperature) {
+async function callProvider(provider, apiKey, messages, temperature, baseUrl, model) {
   return provider === 'claude'
     ? callClaude(apiKey, messages, temperature)
-    : callOpenAI(apiKey, messages, temperature);
+    : callOpenAI(apiKey, messages, temperature, baseUrl, model);
 }
 
 // ── Express middleware ────────────────────────────────────────────────────
@@ -219,11 +222,11 @@ module.exports = function(app) {
       return void (res.writeHead(400), res.end(JSON.stringify({ error: 'Invalid JSON' })));
     }
 
-    const { apiKey, provider } = getCredentials();
+    const { apiKey, provider, baseUrl, model } = getCredentials();
     if (!apiKey) return void (res.writeHead(500), res.end(JSON.stringify({ error: 'AI_API_KEY not set' })));
 
     try {
-      const reply = await callProvider(provider, apiKey, parsed.messages, 0.7);
+      const reply = await callProvider(provider, apiKey, parsed.messages, 0.7, baseUrl, model);
       res.writeHead(200);
       res.end(JSON.stringify({ reply }));
     } catch (e) {
@@ -251,7 +254,7 @@ module.exports = function(app) {
     }
 
     const modeConfig = TRANSFORM_PROMPTS[mode] || TRANSFORM_PROMPTS.polish;
-    const { apiKey, provider } = getCredentials();
+    const { apiKey, provider, baseUrl, model } = getCredentials();
     if (!apiKey) return void (res.writeHead(500), res.end(JSON.stringify({ error: 'AI_API_KEY not set' })));
 
     const messages = [
@@ -260,7 +263,7 @@ module.exports = function(app) {
     ];
 
     try {
-      const result = await callProvider(provider, apiKey, messages, modeConfig.temperature);
+      const result = await callProvider(provider, apiKey, messages, modeConfig.temperature, baseUrl, model);
       res.writeHead(200);
       res.end(JSON.stringify({ result }));
     } catch (e) {
@@ -277,6 +280,16 @@ module.exports = function(app) {
     createProxyMiddleware({
       target: 'http://localhost:8080',
       changeOrigin: true,
+    })
+  );
+
+  // Proxy WebSocket connections through port 3000 so friends only need one port open.
+  app.use(
+    '/ws',
+    createProxyMiddleware({
+      target: 'http://localhost:8080',
+      changeOrigin: true,
+      ws: true,
     })
   );
 };

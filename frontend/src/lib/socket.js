@@ -1,4 +1,5 @@
-const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8080/ws';
+const WS_URL = process.env.REACT_APP_WS_URL ||
+  `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
 let ws = null;
 let listeners = [];
@@ -51,9 +52,11 @@ export function connectSocket(token, onMessage) {
 }
 
 // Frame format matches the backend's ws.Frame: SEND_MESSAGE with `content`.
-export function sendSocketMessage(chatId, text, clientMsgId) {
+export function sendSocketMessage(chatId, text, clientMsgId, mediaUrl) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-  ws.send(JSON.stringify({ type: 'SEND_MESSAGE', chatId, content: text, clientMsgId }));
+  const frame = { type: 'SEND_MESSAGE', chatId, content: text || '', clientMsgId };
+  if (mediaUrl) frame.mediaUrl = mediaUrl;
+  ws.send(JSON.stringify(frame));
   return true;
 }
 

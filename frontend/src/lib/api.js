@@ -1,4 +1,4 @@
-const BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080/api';
+const BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -31,6 +31,7 @@ export const api = {
   logout: () => request('/auth/logout', { method: 'POST' }),
   refreshSession: () => request('/auth/refresh', { method: 'POST' }),
   getMe: () => request('/users/me'),
+  updateMe: (name) => request('/users/me', { method: 'PUT', body: JSON.stringify({ name }) }),
   getPresence: (userId) => request(`/presence/${userId}`),
 
   // ── Chat ─────────────────────────────────────────────────────────────────
@@ -45,10 +46,24 @@ export const api = {
   getGroupMembers: (groupId) => request(`/groups/${groupId}/members`),
   addGroupMember: (groupId, userId, role = 'member') => request(`/groups/${groupId}/members`, { method: 'POST', body: JSON.stringify({ userId, role }) }),
   addSubGroupMember: (subGroupId, userId) => request(`/subgroups/${subGroupId}/members`, { method: 'POST', body: JSON.stringify({ userId }) }),
+  leaveGroup: (groupId, userId) => request(`/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
   getContacts: () => request('/contacts'),
 
   // AI endpoints always use relative paths so the dev-server proxy (setupProxy.js)
   // can intercept them when the Java backend is not running.
+
+  // Upload a file (image, PDF, etc.) — returns { mediaUrl, contentType, sizeBytes }
+  uploadMedia: async (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/media', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) throw new Error('Upload failed ' + res.status);
+    return res.json();
+  },
 
   // messages = [{ role: 'user'|'assistant', content: string }, ...]
   sendAiMessage: async (messages) => {

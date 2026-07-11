@@ -12,6 +12,16 @@
     <listener-class>com.arattai.config.AppBootstrapListener</listener-class>
   </listener>
 
+  <!-- CORS filter — must run before AuthFilter so preflight OPTIONS requests are handled -->
+  <filter>
+    <filter-name>CorsFilter</filter-name>
+    <filter-class>com.arattai.web.CorsFilter</filter-class>
+  </filter>
+  <filter-mapping>
+    <filter-name>CorsFilter</filter-name>
+    <url-pattern>/*</url-pattern>
+  </filter-mapping>
+
   <!-- Auth filter — validates JWT (HttpOnly cookie or Authorization header) on every /api/* call -->
   <filter>
     <filter-name>AuthFilter</filter-name>
@@ -160,7 +170,7 @@
   </servlet>
   <servlet-mapping>
     <servlet-name>MediaUploadServlet</servlet-name>
-    <url-pattern>/api/media</url-pattern>
+    <url-pattern>/api/media/*</url-pattern>
   </servlet-mapping>
 
   <!-- AI chat servlet (ephemeral — no persistence) -->

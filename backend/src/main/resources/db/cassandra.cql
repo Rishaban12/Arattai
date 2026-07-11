@@ -92,3 +92,4 @@ CREATE TABLE IF NOT EXISTS message_dedup (
     PRIMARY KEY ((chat_id), client_msg_id)
 ) WITH default_time_to_live = 86400
   AND comment = 'Maps client-side idempotency key to server message_id';
+

@@ -1,6 +1,8 @@
 package com.arattai.web.group;
 
+import com.arattai.config.AppConfig;
 import com.arattai.dto.group.AddMemberRequest;
+import com.arattai.realtime.FanoutService;
 import com.arattai.service.GroupService;
 import com.arattai.util.Json;
 import com.arattai.util.Servlets;
@@ -10,6 +12,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -35,6 +38,12 @@ public class SubGroupServlet extends HttpServlet {
             long subGroupId = Long.parseLong(segments[1]);
             AddMemberRequest body = Json.read(req.getInputStream(), AddMemberRequest.class);
             GroupService.addSubGroupMember(subGroupId, body.userId);
+            // Notify the newly-added member in real-time so their sidebar updates
+            FanoutService.deliver(
+                List.of(body.userId),
+                Json.write(Map.of("type", "SUBGROUP_ADDED", "subGroupId", subGroupId)),
+                AppConfig.get().getRedisClient()
+            );
             Servlets.ok(res, Map.of("message", "Member added to subgroup"));
         } catch (NumberFormatException e) {
             Servlets.error(res, 400, "Invalid subgroup id");
